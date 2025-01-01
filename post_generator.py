@@ -1,128 +1,160 @@
 from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageEnhance
 import textwrap
 import os
+import re
 
-# gives the background image a grayscale to allow easier reading of quote
-def apply_tint(im, tint_color):
-	tinted_im = ImageChops.multiply(im, Image.new('RGB', im.size, tint_color))
-	tinted_im = ImageEnhance.Brightness(im).enhance(.6)
-	return tinted_im
+class ImageQuoteGenerator:
+    def __init__(self, image_dir, quotes_file, output_dir, logo_path=None, platform='instagram_post'):
+        self.image_dir = image_dir
+        self.quotes_file = quotes_file
+        self.output_dir = output_dir
+        self.logo_path = logo_path
+        self.platform = platform
+        self.images = self.get_im_paths()
+        self.quotes = self.get_quotes()
 
-# places the trademark logo at the bottom of the image (hardcoded placement)
-def place_logo(bkg, logo, trademark, font):
-	bkg_width = 1080
-	bkg_height = 1080
+        # Set resolution for different platforms
+        self.platform_resolutions = {
+            'instagram_post': (1080, 1080),  # Square (1:1)
+            'tiktok': (1080, 1920),  # Vertical (9:16)
+        }
 
-	# calculate the size of the logo
-	logo_width, logo_height = logo.size
+    def apply_tint(self, im, tint_color=(200, 200, 200)):
+        tinted_im = ImageChops.multiply(im.convert('RGB'), Image.new('RGB', im.size, tint_color))
+        return ImageEnhance.Brightness(tinted_im).enhance(1.2)
 
-	# calculate the size of the trademark text
-	draw = ImageDraw.Draw(bkg)
-	text_width, text_height = draw.textsize(trademark, font=font)
+    def place_logo(self, bkg, logo):
+        logo = logo.convert('RGBA') if logo.mode != 'RGBA' else logo
+        logo_alpha = logo.split()[3]  # Extract alpha channel
+        logo_width, logo_height = logo.size
+        bkg_width, bkg_height = bkg.size
 
-	# set a constant offset between the logo and the trademark text
-	spacing = 2
+        # Position logo in the top-right corner (adjust to your desired corner)
+        x_position = bkg_width - logo_width - 10  # 10px padding from the right edge
+        y_position = 10  # 10px padding from the top edge
 
-	# calculate the position of the logo so that it always stays above the trademark text
-	x_position = int((bkg_width - logo_width) / 2)
-	y_position = bkg_height - logo_height - text_height
+        # Paste the logo onto the background image using alpha for transparency
+        bkg.paste(logo, (x_position, y_position), logo_alpha)
+        return bkg
 
-	# paste the logo onto the background image
-	bkg.paste(logo, (x_position, y_position), logo)
-	return bkg
+    def place_quote_with_rectangle_background(self, im, quote, font):
+        draw = ImageDraw.Draw(im)
+        W, H = im.size
 
-# places the trademark logo at the bottom of the image (hardcoded placement)
-def place_trademark(im, trademark, font):
-	draw = ImageDraw.Draw(im)
-	bbox =  im.getbbox()
-	W = bbox[2]
-	H = bbox[3]
-	text_width, text_height = draw.textsize(trademark, font=font)
-	x = (W - text_width) / 2
-	y = 1010
-	draw.text((x, y), trademark, font=font)
-	return im
+        # Wrap the text into multiple lines
+        lines = textwrap.wrap(quote, width=24)
 
-# places the quote in the centre of the image
-def place_quote(im, quote, font):
-	draw = ImageDraw.Draw(im)
-	w, h = draw.textsize(quote, font=font)
-	bbox =  im.getbbox()
-	W = bbox[2]; H = bbox[3]
+        # Calculate total height of all lines combined and max width of the lines
+        total_height = 0
+        max_width = 0  # Track the maximum width of the text lines
+        for line in lines:
+            bbox_line = draw.textbbox((0, 0), line, font=font)
+            total_height += bbox_line[3] - bbox_line[1]  # Height of each line
+            max_width = max(max_width, bbox_line[2] - bbox_line[0])  # Max width of lines
 
-	# determine the number of lines needed to fit the quote on the image
-	lines = textwrap.wrap(quote, width=24)
-	n_lines = len(lines)
-	pad = -10
- 
- 	# place the lines of the quotes one on top of the other
-	current_h = H/2 - (n_lines*h/2)
-	for line in lines:
-		w, h = draw.textsize(line, font=font)
-		draw.text(((W - w) / 2, current_h), line, font=font)
-		current_h += h + pad
+        # Set padding to ensure there's space around the text inside the rectangle
+        padding = 20  # Padding around the text (adjust as needed)
 
-# determine is the given path is an image
-def is_img(path):
-	ext = path[-4:]
-	if (ext == ".jpg") or (ext == ".png") or (ext == "jpeg"):
-		return True
-	return False
+        # Now place the rectangle correctly based on the calculated values
+        rect_left = (W - max_width) // 2 - padding  # Horizontal center of the rectangle with padding
 
-# gets the paths of the images to be used
-def get_im_paths(files):
-	pic_paths = []
-	for file in files:
-		if is_img(file):
-			pic_paths.append(file)
-	return pic_paths
+        # Forcefully move the rectangle lower by a fixed number
+        rect_top = (H // 4) + 100  # Adjust this number to move the rectangle down
+        rect_right = rect_left + max_width + padding * 2  # Adjust for the padding
+        rect_bottom = rect_top + total_height + padding  # Adjust the bottom based on text height
 
-# reads the quotes from the quotes.txt file 
-def get_quotes(file):
-	with open(file) as f:
-		content = f.readlines()
-	return [x.strip() for x in content] 
+        # Ensure the rectangle is within the bounds of the image
+        rect_top = max(rect_top, 0)
+        rect_bottom = min(rect_bottom, H)
 
-# creates and saves an image
-def build_image(im_path, quote, im_count = '', logoify = True):
-	W = H = 1080
-	im = Image.open(im_path).resize((W,H))
-	im = apply_tint(im, (200,200,200))
-	draw = ImageDraw.Draw(im)
+        # Debugging: Print rectangle coordinates to ensure the new position is applied
+        print(f"Rectangle Coordinates - Top: {rect_top}, Bottom: {rect_bottom}")
+        print(f"Left: {rect_left}, Right: {rect_right}")
 
-	cap_font = ImageFont.truetype("utils/BebasNeue.otf",115)
-	place_quote(im, quote, cap_font)
+        # Draw the black rectangle as the background (it will surround the text now)
+        draw.rectangle([rect_left, rect_top, rect_right, rect_bottom], fill='black')
 
-	# if the 'add trademark' option is selected then add the logo and trademark
-	if (logoify):
-		trademark = "@PythonPassiveIncome"
-		tm_font = ImageFont.truetype("utils/tommy.otf",52)
-		place_trademark(im, trademark, tm_font)
-		logo = Image.open("utils/logopy.png")
-		place_logo(im, logo, trademark, tm_font)
+        # Place the lines of the quote one on top of the other, inside the rectangle
+        current_h = rect_top + padding-22 # Start placing text at the top of the rectangle
+        for line in lines:
+            bbox_line = draw.textbbox((0, 0), line, font=font)
+            w_line, h_line = bbox_line[2] - bbox_line[0], bbox_line[3] - bbox_line[1]
 
-	im.save('out/' + str(im_count) + "_" + str(quote[0:10]) + '.png')
-	print ("Output image saved as: " + 'out/' + str(im_count) + "_" + str(quote[0:10]) + '.png')
+            # Draw the actual text (white or other color)
+            draw.text(((W - w_line) / 2, current_h), line, font=font, fill='white')  # Center text horizontally
 
+            current_h += h_line  # Move down for the next line
+
+    def get_im_paths(self):
+        return [f for f in os.listdir(self.image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+
+    def get_quotes(self):
+        with open(self.quotes_file) as f:
+            return [line.strip() for line in f.readlines()]
+
+    def resize_and_crop_image_for_platform(self, im):
+        width, height = self.platform_resolutions.get(self.platform, (1080, 1080))
+        original_width, original_height = im.size
+
+        if original_width / original_height > width / height:
+            new_width = width * 2
+            new_height = int((new_width / original_width) * original_height)
+        else:
+            new_height = height * 2
+            new_width = int((new_height / original_height) * original_width)
+
+        im = im.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        left = (new_width - width) // 2
+        top = (new_height - height) // 2
+        right = left + width
+        bottom = top + height
+        im = im.crop((left, top, right, bottom))
+
+        return im
+
+    def build_image(self, im_path, quote, im_count, logoify=True):
+        im = Image.open(im_path)
+        im = self.resize_and_crop_image_for_platform(im)
+        font = ImageFont.truetype("utils/BebasNeue.otf", 80)
+
+        self.place_quote_with_rectangle_background(im, quote, font)
+
+        if logoify and self.logo_path:
+            logo = Image.open(self.logo_path)
+            self.place_logo(im, logo)
+
+        platform_resolution = self.platform_resolutions.get(self.platform, (1080, 1080))
+        width, height = platform_resolution
+        sanitized_quote = re.sub(r'[\\/*?:"<>|]', "", quote)[:40]
+        sanitized_image_name = os.path.splitext(os.path.basename(im_path))[0]
+        output_filename = f"{sanitized_image_name}_{width}x{height}_{sanitized_quote}.png"
+        output_path = os.path.join(self.output_dir, output_filename)
+
+        im.save(output_path)
+        print(f"Output image saved as: {output_path}")
+
+    def generate_images(self, combos=True, logoify=True):
+        im_count = 0
+        for im_path in self.images:
+            for quote in self.quotes:
+                print(f"Overlaying {im_path} with quote: {quote}...")
+                self.build_image(os.path.join(self.image_dir, im_path), quote, im_count, logoify)
+                im_count += 1
 
 def main():
-	dir_paths = os.listdir("in/raw")
-	im_paths = get_im_paths(dir_paths)
-	quotes = get_quotes("in/quotes.txt")
+    image_dir = "in/raw"
+    quotes_file = "in/quotes.txt"
+    output_dir = "out"
+    logo_path = "utils/logopy_tiny.png"
+    platforms = ['instagram_post', 'tiktok']
+    combos = input("Generate all combinations? (y/n): ") == 'y'
+    logoify = input("Include logo? (y/n): ") == 'y'
 
-	combos = (input("Generate all combinations? (y/n): ") == 'y')
-	logoify = (input("Include trademark/logo? (y/n): ") == 'y')
+    for platform in platforms:
+        print(f"Generating images for {platform}...")
+        generator = ImageQuoteGenerator(image_dir, quotes_file, output_dir, logo_path, platform)
+        generator.generate_images(combos, logoify)
+        print(f"Finished generating images for {platform}\n")
 
-	if combos:
-		im_count = 0
-		for im_path in im_paths:
-			for quote in quotes:
-				print ("Overlaying " + str(im_path) + "...")
-				build_image('in/raw/' + im_path, quote, im_count, logoify)
-			im_count = im_count + 1
-	else:	
-		for i, im_path in enumerate(im_paths):
-			print ("Overlaying " + str(im_path) + "...")
-			build_image('in/raw/' + im_path, quotes[i], '', logoify)
-
-main()
+if __name__ == '__main__':
+    main()
